@@ -1,0 +1,2 @@
+- name: Streamlit App Action
+  uses: streamlit/streamlit-app-action@v0.0.3
