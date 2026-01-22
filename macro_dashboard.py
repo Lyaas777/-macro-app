@@ -13,11 +13,9 @@ CONFIG = {
     'LOOKBACK_MIN_PERIODS': 4,
     'INVERSION_THRESHOLD': -0.50,
     'REAL_RATE_THRESHOLD': 2.0,
-    # CHANGED TO 1: Reacts INSTANTLY to data changes (Like Model A)
     'PERSISTENCE_WEEKS': 1  
 }
 
-# MERGED RISK LOGIC (Best of Model B)
 INDICATOR_WEIGHTS = {
     'GROWTH': {
         'GDP QoQ': 1.0, 
@@ -30,7 +28,7 @@ INDICATOR_WEIGHTS = {
         'Housing Starts MoM': 0.6, 
         'Durable Goods MoM': 0.7,
         'U. of Mich. Consumer Sentiment': 0.6,
-        'High Yield Spread': -0.8,  # Risk Off = Negative Growth
+        'High Yield Spread': -0.8,
         'Initial Jobless Claims': -0.7
     },
     'INFLATION': {
@@ -45,66 +43,30 @@ INDICATOR_WEIGHTS = {
     }
 }
 
-# --- FINAL "REAL WORLD" CFD MAPPING ---
 ASSET_MAPPING = {
     'Q1': {
         'Theme': 'Goldilocks (US Growth > World)',
         'Bias': 'Long Tech / Neutral Dollar',
-        'Long': [
-            'NAS100 (Nasdaq) - Best Trade',
-            'BTCUSD (Bitcoin)', 
-            'US500 (S&P 500)',
-            'US10Y (Bond Price - Mild Buy)' 
-        ],
-        'Short': [
-            'V75 (VIX Volatility)', 
-            'XAUUSD (Gold - Neutral/Trim)', 
-            # REMOVED DXY SHORT - Don't fight the Fed in Q1
-        ]
+        'Long': ['NAS100 (Nasdaq)', 'BTCUSD (Bitcoin)', 'US500 (S&P 500)', 'US10Y (Bond Price - Mild Buy)'],
+        'Short': ['V75 (VIX Volatility)', 'XAUUSD (Gold - Neutral/Trim)']
     },
     'Q2': {
         'Theme': 'Reflation (Inflation is Back)',
         'Bias': 'Long Commodities / Short Bonds',
-        'Long': [
-            'USOIL (WTI Crude)', 
-            'XCUUSD (Copper)', 
-            'US30 (Dow Jones - Value)', 
-            'USDJPY (The "Carry" Trade)'
-        ],
-        'Short': [
-            'US10Y (Sell Bond Price) - #1 Trade', 
-            'NAS100 (Tech hates Rates)', 
-            'EURUSD (Rates Divergence)'
-        ]
+        'Long': ['USOIL (WTI Crude)', 'XCUUSD (Copper)', 'US30 (Dow Jones)', 'USDJPY (Carry Trade)'],
+        'Short': ['US10Y (Sell Bond Price)', 'NAS100 (Tech hates Rates)', 'EURUSD']
     },
     'Q3': {
         'Theme': 'Stagflation (Fear)',
         'Bias': 'Cash is King',
-        'Long': [
-            'XAUUSD (Gold - Fear Hedge)', 
-            'USDOLLAR (DXY)', 
-            'USDCHF (Safety)'
-        ],
-        'Short': [
-            'US30 (Dow)', 
-            'US2000 (Small Caps)', 
-            'GBPUSD', 
-            'AUDUSD'
-        ]
+        'Long': ['XAUUSD (Gold)', 'USDOLLAR (DXY)', 'USDCHF'],
+        'Short': ['US30 (Dow)', 'US2000 (Small Caps)', 'GBPUSD', 'AUDUSD']
     },
     'Q4': {
         'Theme': 'Deflation (Recession)',
         'Bias': 'Long Bonds / Short Risk',
-        'Long': [
-            'US10Y (Buy Bond Price) - #1 Trade', 
-            'JPY (Short USDJPY)', 
-            'XAUUSD (Gold)'
-        ],
-        'Short': [
-            'USOIL (WTI)', 
-            'US500 (S&P 500)', 
-            'GBPJPY'
-        ]
+        'Long': ['US10Y (Buy Bond Price)', 'JPY (Short USDJPY)', 'XAUUSD (Gold)'],
+        'Short': ['USOIL (WTI)', 'US500 (S&P 500)', 'GBPJPY']
     }
 }
 
@@ -120,15 +82,18 @@ class MacroRegimeEngine:
 
     def process_data(self):
         df = self.raw.copy()
+        # Clean numeric columns
         for c in ['Previous', 'Forecast', 'Actual']:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce')
 
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         df = df.dropna(subset=['Date'])
         
-        # Blending: Actual > Forecast > Previous (Fill Forward)
+        # Blending Logic
         df['Value_Used'] = df['Actual'].fillna(df['Forecast'])
         
+        # Pivot
         self.wide_vals = df.pivot_table(index='Date', columns='Indicator', values='Value_Used', aggfunc='last')
         self.wide_vals = self.wide_vals.resample('W-FRI').last().ffill()
 
@@ -162,12 +127,10 @@ class MacroRegimeEngine:
                             denom += abs(w)
                 return score / denom if denom > 0 else 0
 
-            # Structural
             row_res['Growth_Struct'] = get_weighted_score(self.struct_accel, 'GROWTH')
             row_res['Inflation_Struct'] = get_weighted_score(self.struct_accel, 'INFLATION')
             row_res['Growth_Tactical'] = get_weighted_score(self.tactical_impulse, 'GROWTH')
             
-            # Raw Quad
             g, i = row_res['Growth_Struct'], row_res['Inflation_Struct']
             if g >= 0 and i < 0: row_res['Raw_Quad'] = 'Q1'
             elif g >= 0 and i >= 0: row_res['Raw_Quad'] = 'Q2'
@@ -178,7 +141,7 @@ class MacroRegimeEngine:
             
         df_res = pd.DataFrame(results).set_index('Date')
         
-        # PERSISTENCE LOGIC
+        # Persistence Logic
         persisted_quads = []
         current_valid_quad = None
         consecutive_count = 0
@@ -191,7 +154,6 @@ class MacroRegimeEngine:
                 consecutive_count = 1
                 last_raw = raw_q
             
-            # If threshold met (or if config is 1), update immediately
             if consecutive_count >= CONFIG['PERSISTENCE_WEEKS']:
                 current_valid_quad = raw_q
             
@@ -206,7 +168,6 @@ class MacroRegimeEngine:
         if self.regime_df.empty: return {}
         latest = self.regime_df.iloc[-1]
         
-        # Warnings
         warnings = []
         yc = self.wide_vals.get('Yield Curve 10Y-2Y', pd.Series([0])).iloc[-1]
         rr = self.wide_vals.get('Real Rate', pd.Series([0])).iloc[-1]
@@ -214,12 +175,10 @@ class MacroRegimeEngine:
         if yc < CONFIG['INVERSION_THRESHOLD']: warnings.append(f"DEEP INVERSION ({yc:.2f}): Reduce Equity Beta")
         if rr > CONFIG['REAL_RATE_THRESHOLD']: warnings.append(f"HIGH REAL RATES ({rr:.2f}): Gold Headwind")
 
-        # Impulse
         g_s = latest['Growth_Struct']
         g_t = latest['Growth_Tactical']
-        tac_bias = "Add Risk" if np.sign(g_s) == np.sign(g_t) else "Trim/Wait (Divergence)"
+        tac_bias = "Add Risk" if np.sign(g_s) == np.sign(g_t) else "Trim/Wait"
         
-        # Probabilities (Markov Chain)
         quad_hist = self.regime_df['Final_Quad']
         trans = quad_hist.groupby([quad_hist, quad_hist.shift(-1)]).size().unstack(fill_value=0)
         current_q = latest['Final_Quad']
@@ -272,27 +231,55 @@ def main():
         st.subheader("1. Load Data")
         uploaded_file = st.file_uploader("Upload CSV History", type=['csv'])
         
-        if uploaded_file is not None and st.session_state.data_history is None:
-            st.session_state.data_history = pd.read_csv(uploaded_file)
+        if uploaded_file is not None:
+            # Load CSV
+            df = pd.read_csv(uploaded_file, on_bad_lines='skip')
+            
+            # --- FEATURE: AUTO-ADD "ENABLE" CHECKBOX ---
+            if 'Enable' not in df.columns:
+                df.insert(0, 'Enable', True) # Defaults to True
+            
+            st.session_state.data_history = df
             st.success("File Loaded!")
-        
+
         st.markdown("---")
         st.download_button("Template CSV", get_template_csv().to_csv(index=False), "macro_template.csv", "text/csv")
 
-    st.title("⚡ Macro Quant: Live Forecast Engine")
+    st.title("⚡ Macro Quant: Scenario Engine")
 
     if st.session_state.data_history is not None:
-        st.markdown("### 📝 Live Data Editor")
-        edited_df = st.data_editor(st.session_state.data_history, num_rows="dynamic", use_container_width=True, height=300)
+        st.markdown("### 📝 Live Data Editor (Uncheck 'Enable' to Simulate)")
+        
+        # Data Editor with Checkboxes
+        edited_df = st.data_editor(
+            st.session_state.data_history, 
+            num_rows="dynamic", 
+            use_container_width=True,
+            height=300,
+            column_config={
+                "Enable": st.column_config.CheckboxColumn(
+                    "Enable",
+                    help="Uncheck to exclude this row from the model",
+                    default=True,
+                )
+            }
+        )
         st.session_state.data_history = edited_df
         
         try:
-            engine = MacroRegimeEngine(edited_df, lookback_weeks)
+            # --- FILTER: ONLY USE ENABLED ROWS ---
+            active_df = edited_df[edited_df['Enable'] == True].copy()
+            
+            if active_df.empty:
+                st.warning("All data disabled. Please enable some rows.")
+                st.stop()
+
+            engine = MacroRegimeEngine(active_df, lookback_weeks)
             engine.calculate_regimes()
             signal = engine.generate_signal()
             
             if not signal:
-                st.warning("Not enough data history.")
+                st.warning("Not enough active data history.")
                 st.stop()
                 
             c1, c2, c3, c4 = st.columns(4)
